@@ -5,7 +5,7 @@ import os
 from telegram import Bot
 
 
-BOT_TOKEN = os.getenv("8465888851:AAGiWwpnRJPdXQZk9U9b04aWmrCx9Xjkovw")
+BOT_TOKEN = os.getenv("8465888851:AAE6Za4sC5NM3CwA6k9mOmulbWpwsP2wrkg")
 API_KEY = os.getenv("dc580eed-fac9-4ab1-891a-75fe83ce3710")
 MATCH_ID = os.getenv("13a8d87a-aec5-44e2-8fe8-b6fc1beb0587")
 CHAT_ID = os.getenv("@Gouravcricketslive")
