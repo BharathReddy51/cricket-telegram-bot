@@ -12,81 +12,145 @@ CHAT_ID = os.getenv("CHAT_ID")
 # ===== TELEGRAM BOT =====
 bot = Bot(token=BOT_TOKEN)
 
-CHECK_INTERVAL = 20  # seconds
+CHECK_INTERVAL = 5  # seconds
 last_sent_score = None
+bot = Bot(token=BOT_TOKEN)
+
+last_score_state = {}
+current_match_id = None
 
 
-def get_match_info():
-    url = f"https://api.cricapi.com/v1/match_info?apikey={API_KEY}&id={MATCH_ID}"
-    res = requests.get(url, timeout=10).json()
+# ===== API HELPERS =====
+def api_get(url):
+    return requests.get(url, timeout=10).json()
+
+
+def get_live_match_id():
+    """AUTO-PICK NEXT LIVE MATCH"""
+    url = f"https://api.cricapi.com/v1/currentMatches?apikey={API_KEY}&offset=0"
+    res = api_get(url)
 
     if res.get("status") != "success":
-        print("API status not success:", res)
         return None
 
-    data = res.get("data")
-    if not data:
-        print("No data in API response")
+    for m in res.get("data", []):
+        if m.get("matchStarted") and not m.get("matchEnded"):
+            return m["id"]
+
+    return None
+
+
+def get_match_info(match_id):
+    url = f"https://api.cricapi.com/v1/match_info?apikey={API_KEY}&id={match_id}"
+    res = api_get(url)
+
+    if res.get("status") != "success":
         return None
 
-    return data
+    return res.get("data")
 
 
-def format_score(data):
+# ===== FORMATTERS =====
+def format_live_score(data):
+    teams = data["teamInfo"]
+    short = {t["name"]: t["shortname"] for t in teams}
+
+    lines = []
+    for s in data.get("score", []):
+        team = s["inning"].split(" Inning")[0].strip()
+        lines.append(
+            f"{short.get(team, team)} {s['r']}/{s['w']} ({s['o']})"
+        )
+
+    return (
+        f"🏏 {data['name']}\n\n"
+        + "\n".join(lines)
+    )
+
+
+def detect_events(data):
+    """🚨 WICKET 🚨 + 4️⃣ FOUR 4️⃣+ 6️⃣ SIX 6️⃣"""
+    alerts = []
     scores = data.get("score", [])
 
-    if not scores:
-        return (
-            f"🏏 {data['name']}\n"
-            f"{data['venue']}\n\n"
-            "Match not started yet."
-        )
-
-    score_lines = []
     for s in scores:
-        score_lines.append(
-            f"{s['inning']} : {s['r']}/{s['w']} ({s['o']} ov)"
-        )
+        key = s["inning"]
+        prev = last_score_state.get(key)
 
-    message = (
-        f"🏏 LIVE SCORE\n\n"
-        f"{data['name']}\n"
-        f"{data['venue']}\n\n"
-        + "\n".join(score_lines)
+        if prev:
+            # 🚨 WICKET
+            if s["w"] > prev["w"]:
+                alerts.append(
+                    f"🚨 WICKET 🚨\n{s['inning']} : {s['r']}/{s['w']} ({s['o']})"
+                )
+
+            # 🔥 FOUR / SIX
+            run_diff = s["r"] - prev["r"]
+            if run_diff == 4:
+                alerts.append("4️⃣ FOUR 4️⃣!")
+            elif run_diff >= 6:
+                alerts.append("6️⃣ SIX 6️⃣!")
+
+        last_score_state[key] = {
+            "r": s["r"],
+            "w": s["w"]
+        }
+
+    return alerts
+
+
+def format_result(data):
+    return (
+        f"🏆 RESULT\n\n"
+        f"{data['status']}\n"
+        f"{data['venue']}"
     )
-    return message
 
 
+# ===== MAIN LOOP =====
 async def main():
-    global last_sent_score
+    global current_match_id
 
-    # ✅ CONFIRM BOT IS RUNNING
     await bot.send_message(
         chat_id=CHAT_ID,
-        text="🟢 Bot connected successfully!"
+        text="🟢 Cricket bot connected & monitoring live matches"
     )
 
     print("Bot loop started")
 
     while True:
         try:
-            data = get_match_info()
+            # 🔁 AUTO MATCH PICK
+            if not current_match_id:
+                current_match_id = get_live_match_id()
+                if current_match_id:
+                    last_score_state.clear()
+                    await bot.send_message(
+                        chat_id=CHAT_ID,
+                        text="🔁 Auto-selected next live match"
+                    )
+                await asyncio.sleep(CHECK_INTERVAL)
+                continue
+
+            data = get_match_info(current_match_id)
             if not data:
                 await asyncio.sleep(CHECK_INTERVAL)
                 continue
 
-            message = format_score(data)
+            # 🎨 LIVE SCORE FORMAT
+            score_msg = format_live_score(data)
+            await bot.send_message(chat_id=CHAT_ID, text=score_msg)
 
-            if last_sent_score is None or message != last_sent_score:
-                await bot.send_message(chat_id=CHAT_ID, text=message)
-                last_sent_score = message
+            # 🚨 EVENTS
+            alerts = detect_events(data)
+            for alert in alerts:
+                await bot.send_message(chat_id=CHAT_ID, text=alert)
 
+            # 🏆 MATCH END
             if data.get("matchEnded"):
-                await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text="✅ Match ended."
-                )
-                break
+                result = format_result(data)
+                await bot.send_message(chat_id=CHAT_ID, text=result)
+                current_match_id = None
 
             await asyncio.sleep(CHECK_INTERVAL)
 
